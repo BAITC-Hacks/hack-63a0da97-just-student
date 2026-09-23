@@ -1,5 +1,7 @@
 import importlib
 import unittest
+import tempfile
+from pathlib import Path
 from io import BytesIO
 from types import SimpleNamespace
 from PIL import Image
@@ -17,17 +19,25 @@ class ChatTests(unittest.TestCase):
         from app.main import ip_requests
         ip_requests.clear()
         module.sessions.clear()
+        self.directory = tempfile.TemporaryDirectory()
+        self.data_patch = patch.object(module.settings, "data_dir", Path(self.directory.name))
+        self.data_patch.start()
         self.patch = patch.object(module, 'catalog', CatalogService(DemoClient()))
         self.patch.start()
         self.mode_patch = patch.object(module.settings, 'demo_mode', True)
         self.mode_patch.start()
+        self.ai_patch = patch.object(module.settings, 'ai_dialogue', False)
+        self.ai_patch.start()
         self.client = TestClient(app).__enter__()
         self.csrf = self.client.get('/api/session').json()['csrf']
 
     def tearDown(self):
+        self.client.__exit__(None, None, None)
+        self.data_patch.stop()
+        self.directory.cleanup()
+        self.ai_patch.stop()
         self.mode_patch.stop()
         self.patch.stop()
-        self.client.__exit__(None, None, None)
 
     def post(self, path, body):
         return self.client.post(path, json=body, headers={'X-CSRF-Token': self.csrf})

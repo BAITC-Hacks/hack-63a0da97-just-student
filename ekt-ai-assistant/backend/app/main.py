@@ -9,7 +9,8 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.exceptions import RequestValidationError
 from pathlib import Path
 from app.api.chat import router as chat_router
-from app.api.chat import mutation, catalog, sessions
+from app.api.chat import mutation, catalog, sessions, persist
+from app.services import session_store
 from app.services.attachment_service import AttachmentError
 from app.services.specification_parser import SpecificationParserError
 
@@ -26,11 +27,12 @@ async def lifespan(app):
     async def maintenance():
         while True:
             for key in list(sessions):
-                if sessions[key].expires < time.monotonic():
+                if sessions[key].expires < time.time():
                     sessions.pop(key, None)
+            await asyncio.to_thread(session_store.cleanup)
             if settings.catalog_warmup and not settings.demo_mode:
                 with suppress(EKTAPIError, OSError):
-                    await catalog._load_catalog()
+                    await catalog._load_live_catalog(advance=True)
             await asyncio.sleep(60)
     task = asyncio.create_task(maintenance())
     yield
@@ -81,6 +83,10 @@ async def security_headers(request, call_next):
             return JSONResponse(status_code=429, content={"detail": "Слишком много запросов с этого адреса. Повторите через минуту."}, headers={"Retry-After": "60"})
         window.append(now)
     response = await call_next(request)
+    current = getattr(request.state, "assistant_session", None)
+    if current is not None:
+        async with current.lock:
+            await asyncio.to_thread(persist, current)
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["Referrer-Policy"] = "same-origin"
     response.headers["Cache-Control"] = "no-store"

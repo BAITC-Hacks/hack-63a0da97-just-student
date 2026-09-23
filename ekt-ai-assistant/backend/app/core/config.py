@@ -30,6 +30,7 @@ class Settings(BaseSettings):
     nvidia_api_key: str = ""
 
     catalog_search_max_pages: int = Field(default=100, ge=1, le=1000)
+    catalog_total_max_pages: int = Field(default=10000, ge=1, le=50000)
     catalog_detail_candidates: int = Field(default=5, ge=1, le=20)
     catalog_cache_ttl_seconds: int = Field(default=300, ge=0, le=86400)
 

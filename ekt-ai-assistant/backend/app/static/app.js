@@ -125,6 +125,8 @@ function render(data) {
   if (data.unresolved?.length) bubble(t("unresolved") + data.unresolved.join("; "));
   if (data.truncated) bubble(t("partial"));
   if (data.cart_url) link(bubble(t("cart")), data.cart_url, t("openCart"));
+  if (data.coverage?.stale) bubble(t("catalogueStale"), "meta");
+  if (data.coverage?.limit_reached) bubble(t("catalogueLimit"), "meta");
   if (data.coverage && !data.coverage.complete && data.coverage.products) bubble(t("cataloguePartial") + data.coverage.products, "meta");
 }
 function translatePage() {

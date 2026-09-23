@@ -27,7 +27,7 @@ class FeatureTests(unittest.TestCase):
         module.sessions.clear()
         ip_requests.clear()
         self.directory = tempfile.TemporaryDirectory()
-        self.patches = [patch.object(settings,'data_dir',Path(self.directory.name)), patch.object(module,'catalog',CatalogService(DemoClient())), patch.object(settings,'demo_mode',True)]
+        self.patches = [patch.object(settings,'data_dir',Path(self.directory.name)), patch.object(module,'catalog',CatalogService(DemoClient())), patch.object(settings,'demo_mode',True), patch.object(settings,'ai_dialogue',False)]
         for p in self.patches:
             p.start()
         self.client=TestClient(app).__enter__()

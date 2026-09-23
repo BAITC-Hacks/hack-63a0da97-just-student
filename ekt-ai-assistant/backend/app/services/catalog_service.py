@@ -19,7 +19,7 @@ from app.models.catalog import (
     StoreAvailability,
 )
 from app.models.specification import SpecificationItem
-from app.services.ekt_client import EKTClient, ekt_client
+from app.services.ekt_client import EKTClient, EKTAPIError, ekt_client
 
 
 SUPPLIER_ARTICLE_KEYS = {
@@ -444,50 +444,65 @@ class CatalogService:
             )
             return products
 
-    async def _load_live_catalog(self) -> list[dict[str, Any]]:
-        """Persistent snapshot + bounded concurrent refresh. No credentials on disk."""
-        if self._catalog and time.monotonic() < self._catalog_expires_at:
-            return self._catalog
-        if self._catalog and self._lock.locked():
+    async def _load_live_catalog(self, advance=False) -> list[dict[str, Any]]:
+        """Resume bounded batches in the background; keep the last usable snapshot."""
+        if self._catalog and not advance and (time.monotonic() < self._catalog_expires_at or self._lock.locked()):
             return self._catalog
         async with self._lock:
-            if self._catalog and time.monotonic() < self._catalog_expires_at:
-                return self._catalog
             path = settings.data_dir / "catalog.json"
             if not self._catalog and path.exists():
                 try:
                     snapshot = json.loads(path.read_text(encoding="utf-8"))
-                    if snapshot.get("base_url") == self.client.base_url and time.time() - snapshot["saved_at"] < settings.catalog_cache_ttl_seconds:
+                    if snapshot.get("base_url") == self.client.base_url:
                         self._catalog = snapshot["products"]
                         self.coverage = snapshot["coverage"]
                         self._catalog_expires_at = time.monotonic() + max(0, settings.catalog_cache_ttl_seconds - (time.time() - snapshot["saved_at"]))
-                        return self._catalog
                 except (ValueError, KeyError, OSError):
                     pass
-            products, seen, complete = [], set(), False
-            for start in range(1, settings.catalog_search_max_pages + 1, 4):
-                pages = range(start, min(start + 4, settings.catalog_search_max_pages + 1))
-                payloads = await asyncio.gather(*(self.client.get_products(page) for page in pages))
-                for payload in payloads:
-                    batch = _extract_products(payload)
-                    if not batch:
-                        complete = True
-                        break
-                    for product in batch:
-                        key = str(product.get("id"))
-                        if key not in seen:
+            if self._catalog and time.monotonic() < self._catalog_expires_at and (not advance or self.coverage.get("complete")):
+                return self._catalog
+            # Old snapshots without a cursor are rebuilt once, then resumed.
+            resume = not self.coverage.get("complete") and self.coverage.get("next_page") and time.time() - self.coverage.get("scan_started_at", 0) < 86400
+            products = list(self._catalog) if resume else []
+            next_page = self.coverage["next_page"] if resume else 1
+            scan_started = self.coverage["scan_started_at"] if resume else time.time()
+            seen = {str(p.get("id")) for p in products}
+            complete, failure = False, None
+            limit = min(next_page + settings.catalog_search_max_pages, settings.catalog_total_max_pages + 1)
+            try:
+                for start in range(next_page, limit, 4):
+                    pages = list(range(start, min(start + 4, limit)))
+                    payloads = await asyncio.gather(*(self.client.get_products(page) for page in pages))
+                    for page, payload in zip(pages, payloads):
+                        batch = _extract_products(payload)
+                        if not isinstance(payload, (list, Mapping)) or (isinstance(payload, Mapping) and not any(k in payload for k in ("products", "items", "results", "data"))):
+                            raise EKTAPIError("Неожиданный формат каталога.")
+                        if not batch:
+                            complete = True
+                            break
+                        fresh_products = [p for p in batch if str(p.get("id")) not in seen]
+                        if not fresh_products:
+                            raise EKTAPIError("API повторяет страницы; полнота каталога не подтверждена.")
+                        for product in fresh_products:
                             products.append(product)
-                            seen.add(key)
-                if complete:
-                    break
+                            seen.add(str(product.get("id")))
+                        next_page = page + 1
+                        last_page = _pagination_last_page(payload)
+                        if last_page is not None and page >= last_page:
+                            complete = True
+                            break
+                    if complete:
+                        break
+            except EKTAPIError:
+                failure = "refresh_failed"
+                if not products:
+                    if self._catalog:
+                        self.coverage["stale"] = True
+                        return self._catalog
+                    raise
             self._catalog = products
             self._catalog_expires_at = time.monotonic() + settings.catalog_cache_ttl_seconds
-            # Official case sample is always part of the representative snapshot.
-            if self.client.base_url == "https://ekt.kz" and "515291" not in seen:
-                sample = _unwrap_product(await self.client.get_product_detail(515291))
-                if sample.get("id"):
-                    products.append(sample)
-            self.coverage = {"products": len(products), "complete": complete, "source": "EKT API", "checked_at": time.time()}
+            self.coverage = {"products": len(products), "complete": complete, "source": "EKT API", "checked_at": time.time(), "next_page": next_page, "scan_started_at": scan_started, "stale": bool(failure), "limit_reached": not complete and next_page > settings.catalog_total_max_pages}
             path.parent.mkdir(parents=True, exist_ok=True)
             temporary = path.with_suffix(".tmp")
             temporary.write_text(json.dumps({"base_url": self.client.base_url, "saved_at": time.time(), "products": products, "coverage": self.coverage}, ensure_ascii=False), encoding="utf-8")
