@@ -90,3 +90,24 @@ async def product_detail(product_id: int):
             status_code=502,
             detail=str(exc),
         )
+
+    from fastapi import FastAPI
+
+from app.api.attachments import router as attachments_router
+from app.core.config import settings
+
+
+app = FastAPI(
+    title=settings.app_name,
+    version=settings.app_version,
+)
+
+app.include_router(attachments_router)
+
+
+@app.get("/")
+async def root():
+    return {
+        "status": "ok",
+        "message": "EKT AI Assistant работает",
+    }

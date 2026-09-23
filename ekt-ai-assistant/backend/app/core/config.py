@@ -15,6 +15,7 @@ class Settings(BaseSettings):
     ekt_api_password: str = ""
 
     openai_api_key: str = ""
+    openai_model: str = "gpt-5.6-luna"
     nvidia_api_key: str = ""
 
     model_config = SettingsConfigDict(

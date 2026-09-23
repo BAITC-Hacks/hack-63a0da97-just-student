@@ -6,3 +6,7 @@ pydantic-settings
 python-dotenv
 openai
 python-multipart
+pypdf
+python-docx
+openpyxl
+python-multipart
