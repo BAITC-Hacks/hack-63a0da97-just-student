@@ -66,12 +66,40 @@ function confirmation(proposal) {
 }
 function product(p, reason, cartQuantity, requestedQuantity) {
   const card = el("article", null, "product");
-  card.append(el("span", p.supplier_article || p.article || String(p.id), "tag"), el("h3", p.name));
-  if (reason) card.append(el("p", reason, "reason"));
+  const visual = el("div", null, "product-visual");
+  const placeholder = el("span", t("noPhoto"), "photo-placeholder");
+  visual.append(placeholder);
+  if (p.image) {
+    try {
+      const source = new URL(p.image, location.origin);
+      if (["https:", "http:"].includes(source.protocol)) {
+        const photoLink = el("a", null, "product-photo-link");
+        photoLink.href = source.href;
+        photoLink.target = "_blank";
+        photoLink.rel = "noopener noreferrer";
+        photoLink.setAttribute("aria-label", t("openPhoto") + ": " + p.name);
+        const photo = el("img", null, "product-photo");
+        photo.alt = p.name;
+        photo.width = photo.height = 160;
+        photo.loading = "lazy";
+        photo.decoding = "async";
+        photo.referrerPolicy = "no-referrer";
+        photo.onload = () => placeholder.remove();
+        photo.onerror = () => photoLink.remove();
+        photo.src = source.href;
+        photoLink.append(photo);
+        visual.append(photoLink);
+      }
+    } catch { /* Missing or invalid images keep the placeholder. */ }
+  }
+  const content = el("div", null, "product-content");
+  card.append(visual, content);
+  content.append(el("span", p.supplier_article || p.article || String(p.id), "tag"), el("h3", p.name));
+  if (reason) content.append(el("p", reason, "reason"));
   const facts = el("div", null, "facts");
   facts.append(el("span", p.price == null ? t("noPrice") : new Intl.NumberFormat(language === "kk" ? "kk-KZ" : "ru-RU").format(p.price) + " ₸"),
     el("span", p.quantity == null ? t("unknownStock") : p.quantity > 0 ? t("inStock") + p.quantity : t("outStock")));
-  card.append(facts);
+  content.append(facts);
   const details = el("details");
   details.append(el("summary", t("details")));
   for (const [key, value] of Object.entries(p.characteristics || {})) {
@@ -83,12 +111,12 @@ function product(p, reason, cartQuantity, requestedQuantity) {
   if (!Object.keys(p.characteristics || {}).length) details.append(el("div", t("noSpecs")));
   if (p.minimum_quantity) details.append(el("div", t("minimum") + p.minimum_quantity));
   if (p.quantity_step) details.append(el("div", t("step") + p.quantity_step));
-  card.append(details);
-  for (const url of p.certificates || []) link(card, url, t("certificate"));
-  if (!p.certificates?.length) card.append(el("p", t("noCertificate"), "reason"));
-  for (const warning of p.data_warnings || []) card.append(el("p", (language === "kk" ? "Каталог деректерінде қайшылық бар: " : warning.message + " ") + warning.values.join(", "), "warning"));
-  if (p.url) link(card, p.url, "ekt.kz ↗");
-  if (cartQuantity != null) card.append(el("p", t("inCart") + cartQuantity));
+  content.append(details);
+  for (const url of p.certificates || []) link(content, url, t("certificate"));
+  if (!p.certificates?.length) content.append(el("p", t("noCertificate"), "reason"));
+  for (const warning of p.data_warnings || []) content.append(el("p", (language === "kk" ? "Каталог деректерінде қайшылық бар: " : warning.message + " ") + warning.values.join(", "), "warning"));
+  if (p.url) link(content, p.url, "ekt.kz ↗");
+  if (cartQuantity != null) content.append(el("p", t("inCart") + cartQuantity));
   else if (p.quantity > 0) {
     const buy = el("div", null, "buy"), count = el("input");
     count.type = "number";
@@ -103,7 +131,7 @@ function product(p, reason, cartQuantity, requestedQuantity) {
       confirmation(await api("/api/cart/propose", { product_id: Number(p.id), quantity: Number(count.value) }));
     });
     buy.append(count, button);
-    card.append(buy);
+    content.append(buy);
   }
   messages.append(card);
 }
