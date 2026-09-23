@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -17,6 +18,10 @@ class Settings(BaseSettings):
     openai_api_key: str = ""
     openai_model: str = "gpt-5.6-luna"
     nvidia_api_key: str = ""
+
+    catalog_search_max_pages: int = Field(default=100, ge=1, le=1000)
+    catalog_detail_candidates: int = Field(default=5, ge=1, le=20)
+    catalog_cache_ttl_seconds: int = Field(default=300, ge=0, le=86400)
 
     model_config = SettingsConfigDict(
         env_file=BACKEND_DIR / ".env",

@@ -25,15 +25,28 @@ class EKTClient:
             pool=10.0,
         )
 
-    async def get_products(self, page: int = 1) -> dict[str, Any]:
-        """
-        Получить страницу каталога ekt.kz.
-        """
+    @property
+    def is_configured(self) -> bool:
+        return bool(
+            settings.ekt_api_user
+            and settings.ekt_api_password
+        )
 
-        if page < 1:
-            raise ValueError("page должен быть >= 1")
+    def ensure_configured(self) -> None:
+        if not self.is_configured:
+            raise EKTAPIError(
+                "EKT API не настроен. Укажите EKT_API_USER и "
+                "EKT_API_PASSWORD в backend/.env."
+            )
 
-        url = f"{self.base_url}/api/products"
+    async def _get_json(
+        self,
+        path: str,
+        params: dict[str, int],
+    ) -> Any:
+        self.ensure_configured()
+
+        url = f"{self.base_url}{path}"
 
         try:
             async with httpx.AsyncClient(
@@ -41,16 +54,11 @@ class EKTClient:
                 timeout=self.timeout,
                 follow_redirects=True,
             ) as client:
-                response = await client.get(
-                    url,
-                    params={
-                        "page": page,
-                    },
-                )
+                response = await client.get(url, params=params)
 
         except httpx.RequestError as exc:
             raise EKTAPIError(
-                f"Не удалось подключиться к EKT API: {exc}"
+                "Не удалось подключиться к EKT API."
             ) from exc
 
         if response.status_code == 401:
@@ -59,10 +67,12 @@ class EKTClient:
                 "Проверь EKT_API_USER и EKT_API_PASSWORD."
             )
 
+        if response.status_code == 404:
+            raise EKTAPIError("Запрошенные данные EKT не найдены.")
+
         if response.status_code != 200:
             raise EKTAPIError(
-                f"EKT API вернул HTTP {response.status_code}: "
-                f"{response.text[:500]}"
+                f"EKT API вернул HTTP {response.status_code}."
             )
 
         try:
@@ -70,8 +80,21 @@ class EKTClient:
 
         except ValueError as exc:
             raise EKTAPIError(
-                "EKT API вернул некорректный JSON"
+                "EKT API вернул некорректный JSON."
             ) from exc
+
+    async def get_products(self, page: int = 1) -> Any:
+        """
+        Получить страницу каталога ekt.kz.
+        """
+
+        if page < 1:
+            raise ValueError("page должен быть >= 1")
+
+        return await self._get_json(
+            "/api/products",
+            {"page": page},
+        )
 
     async def get_product_detail(
         self,
@@ -84,50 +107,10 @@ class EKTClient:
         if product_id <= 0:
             raise ValueError("product_id должен быть > 0")
 
-        url = f"{self.base_url}/api/products/detail"
-
-        try:
-            async with httpx.AsyncClient(
-                auth=self.auth,
-                timeout=self.timeout,
-                follow_redirects=True,
-            ) as client:
-                response = await client.get(
-                    url,
-                    params={
-                        "id": product_id,
-                    },
-                )
-
-        except httpx.RequestError as exc:
-            raise EKTAPIError(
-                f"Не удалось подключиться к EKT API: {exc}"
-            ) from exc
-
-        if response.status_code == 401:
-            raise EKTAPIError(
-                "EKT API вернул 401 Unauthorized. "
-                "Проверь EKT_API_USER и EKT_API_PASSWORD."
-            )
-
-        if response.status_code == 404:
-            raise EKTAPIError(
-                f"Товар с id={product_id} не найден"
-            )
-
-        if response.status_code != 200:
-            raise EKTAPIError(
-                f"EKT API вернул HTTP {response.status_code}: "
-                f"{response.text[:500]}"
-            )
-
-        try:
-            return response.json()
-
-        except ValueError as exc:
-            raise EKTAPIError(
-                "EKT API вернул некорректный JSON"
-            ) from exc
+        return await self._get_json(
+            "/api/products/detail",
+            {"id": product_id},
+        )
 
 
 ekt_client = EKTClient()

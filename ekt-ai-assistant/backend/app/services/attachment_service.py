@@ -94,32 +94,35 @@ def extract_xlsx(data: bytes) -> str:
 
     parts = []
 
-    # Ограничиваем количество листов.
-    for sheet in workbook.worksheets[:5]:
-        parts.append(f"--- Лист: {sheet.title} ---")
+    try:
+        # Ограничиваем количество листов.
+        for sheet in workbook.worksheets[:5]:
+            parts.append(f"--- Лист: {sheet.title} ---")
 
-        row_count = 0
+            row_count = 0
 
-        for row in sheet.iter_rows(values_only=True):
-            row_count += 1
+            for row in sheet.iter_rows(values_only=True):
+                row_count += 1
 
-            if row_count > 1000:
-                parts.append(
-                    "[Остальные строки пропущены]"
-                )
-                break
+                if row_count > 1000:
+                    parts.append(
+                        "[Остальные строки пропущены]"
+                    )
+                    break
 
-            values = []
+                values = []
 
-            for value in row[:50]:
-                if value is None:
-                    values.append("")
-                else:
-                    values.append(str(value).strip())
+                for value in row[:50]:
+                    if value is None:
+                        values.append("")
+                    else:
+                        values.append(str(value).strip())
 
-            # Убираем пустые строки
-            if any(values):
-                parts.append(" | ".join(values))
+                # Убираем пустые строки
+                if any(values):
+                    parts.append(" | ".join(values))
+    finally:
+        workbook.close()
 
     result = "\n".join(parts).strip()
 
@@ -137,6 +140,9 @@ def extract_attachment(
 ) -> dict:
     if not filename:
         raise AttachmentError("У файла отсутствует имя.")
+
+    if not data:
+        raise AttachmentError("Файл пуст.")
 
     if len(data) > MAX_FILE_SIZE:
         raise AttachmentError(
