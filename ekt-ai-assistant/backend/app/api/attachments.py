@@ -1,4 +1,5 @@
 from fastapi import APIRouter, File, HTTPException, UploadFile
+from starlette.concurrency import run_in_threadpool
 
 from app.models.catalog import FileMetadata, MatchProductsResponse
 from app.services.attachment_service import (
@@ -22,10 +23,13 @@ router = APIRouter(
 
 async def _extract_upload(file: UploadFile) -> dict:
     data = await file.read(MAX_FILE_SIZE + 1)
-    return extract_attachment(
-        filename=file.filename or "unknown",
-        data=data,
-    )
+    if (file.filename or "").lower().endswith((".jpg", ".jpeg", ".png")):
+        from app.services.vision import extract_image
+        return await extract_image(file.filename, data)
+    if (file.filename or "").lower().endswith(".pdf"):
+        from app.services.pdf_ocr import extract_pdf_with_ocr
+        return await extract_pdf_with_ocr(file.filename, data)
+    return await run_in_threadpool(extract_attachment, file.filename or "unknown", data)
 
 
 def _file_metadata(attachment: dict) -> FileMetadata:
@@ -130,6 +134,7 @@ async def match_products(
         return MatchProductsResponse(
             file=_file_metadata(attachment),
             items=matched_items,
+            unresolved=parsed.unresolved,
         )
 
     except AttachmentError as exc:

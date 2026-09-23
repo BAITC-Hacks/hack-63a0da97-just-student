@@ -10,6 +10,16 @@ BACKEND_DIR = Path(__file__).resolve().parents[2]
 class Settings(BaseSettings):
     app_name: str = "EKT AI Assistant"
     app_version: str = "0.1.0"
+    demo_mode: bool = True
+    cookie_secure: bool = False
+    purchase_terms: str = ""
+    manager_url: str = "https://ekt.kz/about/contacts/"
+    ai_dialogue: bool = True
+    openai_timeout_seconds: float = 25
+    catalog_warmup: bool = True
+    data_dir: Path = BACKEND_DIR / "var"
+    # Only explicitly curated relations; never guess electrical compatibility.
+    related_products_file: Path = BACKEND_DIR / "data" / "related_products.json"
 
     ekt_base_url: str = "https://ekt.kz"
     ekt_api_user: str = ""

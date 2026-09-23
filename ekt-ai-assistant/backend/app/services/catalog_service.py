@@ -4,6 +4,9 @@ import asyncio
 import re
 import time
 import unicodedata
+import json
+from pathlib import Path
+from urllib.parse import urlparse, unquote, urljoin
 from collections.abc import Iterable, Mapping
 from typing import Any
 
@@ -153,6 +156,10 @@ def _is_exact(item: SpecificationItem, product: Mapping[str, Any]) -> bool:
 def _score(item: SpecificationItem, product: Mapping[str, Any]) -> float:
     if _is_exact(item, product):
         return 2.0
+    # API list does not include supplier_article. Names often start with it;
+    # boost retrieval only, then verify the identifier against detail properties.
+    if item.article and _compact(item.article) in {_compact(t) for t in str(product.get("name", "")).split()}:
+        return 1.8
 
     query = _normalize(item.search_query)
     product_text = _normalize(_product_text(product))
@@ -311,7 +318,16 @@ def _url_value(value: Any) -> str | None:
             if result:
                 return result
         return None
-    return _scalar(value)
+    if isinstance(value, Mapping):
+        return _url_value(_case_insensitive_get(value, "url", "href", "link", "src"))
+    result = _scalar(value)
+    if not result:
+        return None
+    if result.startswith("/static/"):
+        return result
+    if result.startswith("/") and not result.startswith("//"):
+        return urljoin(settings.ekt_base_url, result)
+    return result if urlparse(result).scheme in ("https", "http") else None
 
 
 def _to_catalog_product(product: Mapping[str, Any]) -> CatalogProduct | None:
@@ -337,13 +353,30 @@ def _to_catalog_product(product: Mapping[str, Any]) -> CatalogProduct | None:
         _case_insensitive_get(product, "image", "images", "picture", "photo")
     )
     url = _url_value(_case_insensitive_get(product, "url", "link"))
-    certificates = _string_list(
-        _case_insensitive_get(product, "certificates", "certificate")
-    )
+    raw_certificates = _case_insensitive_get(product, "certificates", "certificate")
+    if not isinstance(raw_certificates, list):
+        raw_certificates = [raw_certificates]
+    certificates = [cert_url for item in raw_certificates if (cert_url := _url_value(item))]
+    category = _scalar(_case_insensitive_get(product, "category"))
+    category_source = "catalog" if category else None
+    if not category and url:
+        parts = [p for p in urlparse(url).path.split("/") if p]
+        if len(parts) >= 3 and parts[0] == "catalog":
+            category = "/".join(unquote(p) for p in parts[1:-1])
+            category_source = "product_url"
+    properties = dict(_property_pairs(product))
+    minimum = _number(_case_insensitive_get(product, "minimum_quantity")) or _number(_property_value(product, {"kratnostmin", "minimumquantity", "минимальнаяпартия"}))
+    step = _number(_case_insensitive_get(product, "quantity_step", "measure_ratio"))
 
     return CatalogProduct(
         id=product_id,
         name=name,
+        category=category,
+        category_source=category_source,
+        minimum_quantity=minimum if minimum and minimum > 0 else None,
+        quantity_step=step if step and step > 0 else None,
+        unit=_scalar(_case_insensitive_get(product, "unit", "measure")) or properties.get("Единица"),
+        characteristics=properties,
         article=article,
         supplier_article=_supplier_article(product),
         price=price,
@@ -363,8 +396,11 @@ class CatalogService:
         self._catalog_expires_at = 0.0
         self._detail_cache: dict[str, tuple[float, dict[str, Any]]] = {}
         self._lock = asyncio.Lock()
+        self.coverage = {"products": 0, "complete": False, "source": "memory"}
 
     async def _load_catalog(self) -> list[dict[str, Any]]:
+        if isinstance(self.client, EKTClient):
+            return await self._load_live_catalog()
         now = time.monotonic()
         if self._catalog and now < self._catalog_expires_at:
             return self._catalog
@@ -406,6 +442,56 @@ class CatalogService:
             self._catalog_expires_at = (
                 time.monotonic() + settings.catalog_cache_ttl_seconds
             )
+            return products
+
+    async def _load_live_catalog(self) -> list[dict[str, Any]]:
+        """Persistent snapshot + bounded concurrent refresh. No credentials on disk."""
+        if self._catalog and time.monotonic() < self._catalog_expires_at:
+            return self._catalog
+        if self._catalog and self._lock.locked():
+            return self._catalog
+        async with self._lock:
+            if self._catalog and time.monotonic() < self._catalog_expires_at:
+                return self._catalog
+            path = settings.data_dir / "catalog.json"
+            if not self._catalog and path.exists():
+                try:
+                    snapshot = json.loads(path.read_text(encoding="utf-8"))
+                    if snapshot.get("base_url") == self.client.base_url and time.time() - snapshot["saved_at"] < settings.catalog_cache_ttl_seconds:
+                        self._catalog = snapshot["products"]
+                        self.coverage = snapshot["coverage"]
+                        self._catalog_expires_at = time.monotonic() + max(0, settings.catalog_cache_ttl_seconds - (time.time() - snapshot["saved_at"]))
+                        return self._catalog
+                except (ValueError, KeyError, OSError):
+                    pass
+            products, seen, complete = [], set(), False
+            for start in range(1, settings.catalog_search_max_pages + 1, 4):
+                pages = range(start, min(start + 4, settings.catalog_search_max_pages + 1))
+                payloads = await asyncio.gather(*(self.client.get_products(page) for page in pages))
+                for payload in payloads:
+                    batch = _extract_products(payload)
+                    if not batch:
+                        complete = True
+                        break
+                    for product in batch:
+                        key = str(product.get("id"))
+                        if key not in seen:
+                            products.append(product)
+                            seen.add(key)
+                if complete:
+                    break
+            self._catalog = products
+            self._catalog_expires_at = time.monotonic() + settings.catalog_cache_ttl_seconds
+            # Official case sample is always part of the representative snapshot.
+            if self.client.base_url == "https://ekt.kz" and "515291" not in seen:
+                sample = _unwrap_product(await self.client.get_product_detail(515291))
+                if sample.get("id"):
+                    products.append(sample)
+            self.coverage = {"products": len(products), "complete": complete, "source": "EKT API", "checked_at": time.time()}
+            path.parent.mkdir(parents=True, exist_ok=True)
+            temporary = path.with_suffix(".tmp")
+            temporary.write_text(json.dumps({"base_url": self.client.base_url, "saved_at": time.time(), "products": products, "coverage": self.coverage}, ensure_ascii=False), encoding="utf-8")
+            temporary.replace(path)
             return products
 
     async def _detail(self, summary: Mapping[str, Any]) -> dict[str, Any]:

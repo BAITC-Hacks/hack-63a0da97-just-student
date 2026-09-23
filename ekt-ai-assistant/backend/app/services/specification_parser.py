@@ -118,6 +118,8 @@ def get_openai_client() -> AsyncOpenAI:
 
     return AsyncOpenAI(
         api_key=settings.openai_api_key,
+        timeout=settings.openai_timeout_seconds,
+        max_retries=1,
     )
 
 
@@ -129,6 +131,24 @@ async def parse_specification_text(
         raise SpecificationParserError(
             "Текст спецификации пуст."
         )
+
+    if len(text) > MAX_AI_INPUT_CHARS:
+        chunks, current = [], ""
+        for line in text.splitlines(keepends=True):
+            if len(line) > MAX_AI_INPUT_CHARS:
+                raise SpecificationParserError("Слишком длинная строка документа. Разделите спецификацию на части.")
+            if len(current) + len(line) > MAX_AI_INPUT_CHARS:
+                chunks.append(current)
+                current = ""
+            current += line
+        if current:
+            chunks.append(current)
+        result = SpecificationParseResult(items=[], unresolved=[])
+        for chunk in chunks:
+            parsed = await parse_specification_text(chunk)
+            result.items.extend(parsed.items)
+            result.unresolved.extend(parsed.unresolved)
+        return result
 
     # Не отправляем огромный документ целиком.
     ai_text = text[:MAX_AI_INPUT_CHARS]
@@ -183,3 +203,5 @@ async def parse_specification_text(
         raise SpecificationParserError(
             "OpenAI вернул некорректную структуру данных."
         ) from exc
+    finally:
+        await client.close()

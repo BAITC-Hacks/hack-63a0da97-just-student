@@ -26,6 +26,12 @@ class DataWarning(BaseModel):
 class CatalogProduct(BaseModel):
     id: int | str
     name: str
+    category: str | None = None
+    category_source: str | None = None
+    minimum_quantity: float | None = None
+    quantity_step: float | None = None
+    unit: str | None = None
+    characteristics: dict[str, str] = Field(default_factory=dict)
     article: str | None = None
     supplier_article: str | None = None
     price: float | None = None
@@ -55,3 +61,4 @@ class MatchProductsResponse(BaseModel):
     success: bool = True
     file: FileMetadata
     items: list[MatchedSpecificationItem]
+    unresolved: list[str] = Field(default_factory=list)

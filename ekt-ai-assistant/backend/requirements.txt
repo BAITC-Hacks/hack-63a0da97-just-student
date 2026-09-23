@@ -9,3 +9,6 @@ python-multipart
 pypdf
 python-docx
 openpyxl
+Pillow
+pymupdf
+xlrd

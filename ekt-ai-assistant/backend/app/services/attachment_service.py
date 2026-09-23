@@ -1,5 +1,6 @@
 from io import BytesIO
 from pathlib import Path
+from zipfile import ZipFile, BadZipFile
 
 from docx import Document
 from openpyxl import load_workbook
@@ -96,6 +97,8 @@ def extract_xlsx(data: bytes) -> str:
 
     try:
         # Ограничиваем количество листов.
+        if len(workbook.worksheets) > 5:
+            raise AttachmentError("Разделите Excel: максимум 5 листов на один файл.")
         for sheet in workbook.worksheets[:5]:
             parts.append(f"--- Лист: {sheet.title} ---")
 
@@ -105,10 +108,10 @@ def extract_xlsx(data: bytes) -> str:
                 row_count += 1
 
                 if row_count > 1000:
-                    parts.append(
-                        "[Остальные строки пропущены]"
-                    )
-                    break
+                    raise AttachmentError("Разделите Excel: максимум 1000 строк на лист.")
+
+                if any(v is not None for v in row[50:]):
+                    raise AttachmentError("Разделите Excel: максимум 50 столбцов на лист.")
 
                 values = []
 
@@ -150,6 +153,13 @@ def extract_attachment(
         )
 
     extension = Path(filename).suffix.lower()
+    if extension in (".docx", ".xlsx"):
+        try:
+            with ZipFile(BytesIO(data)) as archive:
+                if sum(item.file_size for item in archive.infolist()) > 50 * 1024 * 1024:
+                    raise AttachmentError("Слишком большой распакованный документ (максимум 50 MB).")
+        except BadZipFile as exc:
+            raise AttachmentError("Повреждённый DOCX/XLSX.") from exc
 
     if extension == ".pdf":
         text = extract_pdf(data)
@@ -160,20 +170,39 @@ def extract_attachment(
     elif extension == ".xlsx":
         text = extract_xlsx(data)
 
+    elif extension == ".xls":
+        try:
+            import xlrd
+            workbook = xlrd.open_workbook(file_contents=data, on_demand=True)
+            parts = []
+            try:
+                for sheet in workbook.sheets():
+                    if sheet.nrows > 1000 or sheet.ncols > 50:
+                        raise AttachmentError("Разделите XLS: максимум 1000 строк и 50 столбцов на лист.")
+                    parts.extend(" | ".join(str(v) for v in sheet.row_values(i)) for i in range(sheet.nrows))
+            finally:
+                workbook.release_resources()
+            text = "\n".join(parts)
+        except AttachmentError:
+            raise
+        except Exception as exc:
+            raise AttachmentError("Не удалось открыть XLS.") from exc
+
     else:
         raise AttachmentError(
             "Формат пока не поддерживается. "
-            "Используй PDF, DOCX или XLSX."
+            "Используй PDF, DOCX, XLS или XLSX."
         )
 
     # Защита от слишком большого текста
     max_chars = 50_000
 
-    truncated = False
+    truncated = "[Остальные строки пропущены]" in text
+    if extension == ".pdf":
+        truncated = len(PdfReader(BytesIO(data)).pages) > 50
 
     if len(text) > max_chars:
-        text = text[:max_chars]
-        truncated = True
+        raise AttachmentError("Разделите документ: максимум 50 000 символов на файл.")
 
     return {
         "filename": filename,
